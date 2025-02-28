@@ -18,7 +18,7 @@ on:
       A11Y_SCAN_MAX_NUM_PAGES:
         description: 'Maximum Number of Pages to Scan'
         required: true
-        default: '10'
+        default: '100'
       A11Y_SCAN_MAX_CONCURRENCY:
         description: 'Maximum Number of Concurrent Page Scans'
         required: true
@@ -26,7 +26,7 @@ on:
       A11Y_SCAN_SCREENSHOTS:
         description: 'Include screenshots (screenshots, none)'
         required: true
-        default: 'screenshots'
+        default: 'none'
       A11Y_SCAN_FOLLOW_ROBOTS:
         description: 'Crawler adhere to robots.txt (yes, no)'
         required: true
@@ -34,7 +34,7 @@ on:
       A11Y_SCAN_STRATEGY:
         description: 'Crawler adhere to pages matching exact hostname or same parent domain (same-hostname, same-domain)'
         required: true
-        default: 'same-domain'
+        default: 'same-hostname'
       USERNAME:
         description: "Your name (for telemetry purposes)"
         required: false
