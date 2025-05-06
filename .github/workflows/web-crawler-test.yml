@@ -33,7 +33,7 @@ on:
         default: 'no'
       A11Y_SCAN_STRATEGY:
         description: 'Crawler adhere to pages matching exact hostname or same parent domain (same-hostname, same-domain)'
-        required: true
+        required: false
         default: 'same-hostname'
       USERNAME:
         description: "Your name (for telemetry purposes)"
