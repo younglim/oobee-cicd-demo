@@ -12,13 +12,13 @@ on:
         required: true
         default: 'https://'
       A11Y_SCANNER:
-        description: 'Scanner (website, sitemap)'
+        description: 'Scanner (website, sitemap, intelligent)'
         required: true
-        default: 'website'
+        default: 'intelligent'
       A11Y_SCAN_MAX_NUM_PAGES:
         description: 'Maximum Number of Pages to Scan'
         required: true
-        default: '100'
+        default: '1000'
       A11Y_SCAN_MAX_CONCURRENCY:
         description: 'Maximum Number of Concurrent Page Scans'
         required: true
