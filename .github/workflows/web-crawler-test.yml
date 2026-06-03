@@ -23,6 +23,16 @@ on:
         description: 'Maximum Number of Concurrent Page Scans'
         required: true
         default: '10'
+      A11Y_DOCKER_MAX_MEMORY:
+        description: 'Docker memory limit (host-default, 1g, 2g, 4g)'
+        required: false
+        type: choice
+        default: 'host-default'
+        options:
+          - host-default
+          - 1g
+          - 2g
+          - 4g
       A11Y_SCAN_SCREENSHOTS:
         description: 'Include screenshots (screenshots, none)'
         required: true
@@ -50,7 +60,8 @@ jobs:
   build:
     runs-on: ubuntu-24.04-arm
     env:
-      DOCKER_MAX_MEMORY: ${{ vars.DOCKER_MAX_MEMORY || '' }}
+      DOCKER_MAX_MEMORY_INPUT: ${{ github.event.inputs.A11Y_DOCKER_MAX_MEMORY || 'host-default' }}
+      DOCKER_MAX_MEMORY_VAR: ${{ vars.DOCKER_MAX_MEMORY || '' }}
 
     steps:
       - name: Get Public IP Address
@@ -95,10 +106,16 @@ jobs:
         run: |
           # Build your Docker image (replace 'oobee' and 'Dockerfile' with your image name and Dockerfile path)
           docker build -t oobee .
-          # Run the Docker container; apply memory cap only if configured
+          # Prefer workflow input; fall back to repo variable; otherwise use host default.
+          selected_memory="${DOCKER_MAX_MEMORY_INPUT}"
+          if [ "${selected_memory}" = "host-default" ]; then
+            selected_memory="${DOCKER_MAX_MEMORY_VAR}"
+          fi
+
+          # Run the Docker container; apply memory cap only if configured.
           memory_arg=""
-          if [ -n "${DOCKER_MAX_MEMORY}" ]; then
-            memory_arg="--memory=${DOCKER_MAX_MEMORY}"
+          if [ -n "${selected_memory}" ]; then
+            memory_arg="--memory=${selected_memory}"
           fi
           docker run -dit --name oobee-container ${memory_arg} --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
         # Ensure the Docker container is running before running the next step
