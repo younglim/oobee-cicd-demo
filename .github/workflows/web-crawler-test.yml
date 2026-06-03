@@ -49,6 +49,8 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04-arm
+    env:
+      DOCKER_MAX_MEMORY: ${{ vars.DOCKER_MAX_MEMORY || '' }}
 
     steps:
       - name: Get Public IP Address
@@ -93,8 +95,12 @@ jobs:
         run: |
           # Build your Docker image (replace 'oobee' and 'Dockerfile' with your image name and Dockerfile path)
           docker build -t oobee .
-          # Run the Docker container (adjust any options as needed)
-          docker run -dit --name oobee-container --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
+          # Run the Docker container; apply memory cap only if configured
+          memory_arg=""
+          if [ -n "${DOCKER_MAX_MEMORY}" ]; then
+            memory_arg="--memory=${DOCKER_MAX_MEMORY}"
+          fi
+          docker run -dit --name oobee-container ${memory_arg} --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
         # Ensure the Docker container is running before running the next step
         continue-on-error: true
   
