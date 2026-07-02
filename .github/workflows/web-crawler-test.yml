@@ -121,10 +121,12 @@ jobs:
           if [ -n "${selected_memory}" ]; then
             memory_arg="--memory=${selected_memory}"
           fi
-          docker run -dit --name oobee-container ${memory_arg} --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
+          
+          # Added --storage-opt size=20G to limit container disk space
+          docker run -dit --name oobee-container ${memory_arg} --storage-opt size=20G --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
         # Ensure the Docker container is running before running the next step
         continue-on-error: true
-
+        
       - name: Start accessibility scan in Docker container
         run: |
           # Execute a webisite crawl
