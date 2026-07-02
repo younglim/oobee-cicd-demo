@@ -50,9 +50,9 @@ on:
         required: true
         default: 'no'
       A11Y_SCAN_STRATEGY:
-        description: 'Crawler adhere to pages matching exact hostname or same parent domain (same-hostname, same-domain)'
+        description: 'Crawler strategy (same-hostname, same-domain). Leave blank for unsupported scans like local files.'
         required: false
-        default: 'same-hostname'
+        default: ''
       A11Y_DEVICE:
         description: 'Device'
         required: false
