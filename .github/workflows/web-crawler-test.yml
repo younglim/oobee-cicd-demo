@@ -33,6 +33,10 @@ on:
           - 1g
           - 2g
           - 4g
+      A11Y_DOCKER_MAX_DISK:
+        description: 'Docker disk space limit (e.g., 10G, 20G)'
+        required: false
+        default: '20G'
       A11Y_NODE_MAX_OLD_SPACE:
         description: 'Node max old space size in MB'
         required: false
@@ -66,6 +70,7 @@ jobs:
     env:
       DOCKER_MAX_MEMORY_INPUT: ${{ github.event.inputs.A11Y_DOCKER_MAX_MEMORY || 'host-default' }}
       DOCKER_MAX_MEMORY_VAR: ${{ vars.DOCKER_MAX_MEMORY || '' }}
+      DOCKER_MAX_DISK_INPUT: ${{ github.event.inputs.A11Y_DOCKER_MAX_DISK || '20G' }}
 
     steps:
       - name: Get Public IP Address
@@ -112,9 +117,10 @@ jobs:
           sudo rm -rf /var/lib/docker
           sudo mkdir -p /var/lib/docker
           
-          # Create a 40GB sparse file for Docker's backend (must be larger than your 20G container limit)
-          # Note: 'truncate' creates a sparse file, so it won't actually consume 40GB on the runner instantly.
-          sudo truncate -s 40G /tmp/docker-backend.img
+          # Create a 100GB sparse file for Docker's backend 
+          # Note: 'truncate' creates a sparse file, so it won't actually consume 100GB on the runner instantly.
+          # We use 100G here to ensure there's plenty of headroom regardless of what A11Y_DOCKER_MAX_DISK is set to.
+          sudo truncate -s 100G /tmp/docker-backend.img
           
           # Format the sparse file as XFS
           sudo mkfs.xfs /tmp/docker-backend.img
@@ -135,6 +141,7 @@ jobs:
         run: |
           # Build your Docker image (replace 'oobee' and 'Dockerfile' with your image name and Dockerfile path)
           docker build -t oobee .
+          
           # Prefer workflow input; fall back to repo variable; otherwise use host default.
           selected_memory="${DOCKER_MAX_MEMORY_INPUT}"
           if [ "${selected_memory}" = "host-default" ]; then
@@ -147,8 +154,8 @@ jobs:
             memory_arg="--memory=${selected_memory}"
           fi
           
-          # Added --storage-opt size=20G to limit container disk space
-          docker run -dit --name oobee-container ${memory_arg} --storage-opt size=20G --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
+          # Apply the user-defined disk size from the workflow inputs
+          docker run -dit --name oobee-container ${memory_arg} --storage-opt size=${DOCKER_MAX_DISK_INPUT} --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
         # Ensure the Docker container is running before running the next step
         continue-on-error: true
         
