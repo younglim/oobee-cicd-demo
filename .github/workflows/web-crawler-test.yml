@@ -100,6 +100,31 @@ jobs:
           echo "username=$username" >> $GITHUB_ENV
           # Use $final_email and $username in subsequent steps
 
+      - name: Configure Docker for Storage Quotas (XFS)
+        run: |
+          # Install XFS utilities (just in case they are missing on the arm runner)
+          sudo apt-get update && sudo apt-get install -y xfsprogs
+          
+          # Stop the Docker daemon
+          sudo systemctl stop docker
+          
+          # Clear existing docker data and prepare the mount point
+          sudo rm -rf /var/lib/docker
+          sudo mkdir -p /var/lib/docker
+          
+          # Create a 40GB sparse file for Docker's backend (must be larger than your 20G container limit)
+          # Note: 'truncate' creates a sparse file, so it won't actually consume 40GB on the runner instantly.
+          sudo truncate -s 40G /tmp/docker-backend.img
+          
+          # Format the sparse file as XFS
+          sudo mkfs.xfs /tmp/docker-backend.img
+          
+          # Mount it to /var/lib/docker with the required pquota flag
+          sudo mount -o loop,pquota /tmp/docker-backend.img /var/lib/docker
+          
+          # Restart Docker
+          sudo systemctl start docker
+          
       - name: Checkout code
         uses: actions/checkout@master
         with:
