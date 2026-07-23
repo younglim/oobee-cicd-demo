@@ -1,0 +1,202 @@
+name: Build Run and Test Website Crawl (Combined scan, GSB amd64)
+
+on:
+  workflow_dispatch:
+    inputs:
+      A11Y_ENGINE_BRANCH:
+        description: 'Oobee Branch (master, other)'
+        required: true
+        default: 'master'
+      A11Y_SCAN_URL:
+        description: 'Website URL'
+        required: true
+        default: 'https://'
+      A11Y_SCANNER:
+        description: 'Scanner (website, sitemap, intelligent)'
+        required: true
+        default: 'intelligent'
+      A11Y_SCAN_MAX_NUM_PAGES:
+        description: 'Maximum Number of Pages to Scan'
+        required: true
+        default: '1000'
+      A11Y_SCAN_MAX_CONCURRENCY:
+        description: 'Maximum Number of Concurrent Page Scans'
+        required: true
+        default: '10'
+      A11Y_DOCKER_MAX_MEMORY:
+        description: 'Docker memory limit (host-default, 1g, 2g, 4g)'
+        required: false
+        type: choice
+        default: 'host-default'
+        options:
+          - host-default
+          - 1g
+          - 2g
+          - 4g
+      A11Y_DOCKER_MAX_DISK:
+        description: 'Docker disk space limit (e.g., 10G, 20G)'
+        required: false
+        default: '20G'
+      A11Y_NODE_MAX_OLD_SPACE:
+        description: 'Node max old space size in MB'
+        required: false
+        default: '10000'
+      A11Y_SCAN_SCREENSHOTS:
+        description: 'Include screenshots (screenshots, none)'
+        required: true
+        default: 'none'
+      A11Y_SCAN_FOLLOW_ROBOTS:
+        description: 'Crawler adhere to robots.txt (yes, no)'
+        required: true
+        default: 'no'
+      A11Y_SCAN_STRATEGY:
+        description: 'Crawler strategy (same-hostname, same-domain). Leave blank for unsupported scans like local files.'
+        required: false
+        default: ''
+      A11Y_RULESET:
+        description: 'Ruleset flag -y (e.g., enable-wcag-aaa). Leave blank to omit.'
+        required: false
+        default: 'enable-wcag-aaa'
+      USERNAME:
+        description: "Your name (for telemetry purposes)"
+        required: false
+      EMAIL:
+        description: "Email address (for telemetry purposes)"
+        required: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    env:
+      DOCKER_MAX_MEMORY_INPUT: ${{ github.event.inputs.A11Y_DOCKER_MAX_MEMORY || 'host-default' }}
+      DOCKER_MAX_MEMORY_VAR: ${{ vars.DOCKER_MAX_MEMORY || '' }}
+      DOCKER_MAX_DISK_INPUT: ${{ github.event.inputs.A11Y_DOCKER_MAX_DISK || '20G' }}
+
+    steps:
+      - name: Get Public IP Address
+        run:
+          curl https://ipinfo.io
+
+      - name: Check if email is valid or empty
+        run: |
+          email="${{ inputs.EMAIL }}"
+          echo "Email provided: $email"
+          valid_email_regex='^.+@.+\..+$'
+          echo "Validating with regex: $valid_email_regex"
+          status="$(if [ -z "$email" ]; then echo "Empty"; elif [[ $email =~ $valid_email_regex ]]; then echo "Valid"; else echo "Invalid"; fi)"
+
+          if [[ "$status" == "Invalid" ]]; then
+            echo "Invalid email provided. Workflow failed."
+            exit 1
+          fi
+
+        # Proceed with steps if EMAIL is valid or empty
+      - name: Use provided name and email or defaults
+        run: |
+          if [[ -z "${{ inputs.EMAIL }}" ]]; then
+            final_email="${{ github.actor }}@users.noreply.github.com"
+          else
+            final_email="${{ inputs.EMAIL }}"
+          fi
+
+          username="${{ inputs.USERNAME || github.actor }}"
+
+          echo "final_email=$final_email" >> $GITHUB_ENV
+          echo "username=$username" >> $GITHUB_ENV
+          # Use $final_email and $username in subsequent steps
+
+      - name: Configure Docker for Storage Quotas (XFS)
+        run: |
+          # Install XFS utilities (just in case they are missing on the arm runner)
+          sudo apt-get update && sudo apt-get install -y xfsprogs
+          
+          # Stop the Docker daemon
+          sudo systemctl stop docker
+          
+          # Clear existing docker data and prepare the mount point
+          sudo rm -rf /var/lib/docker
+          sudo mkdir -p /var/lib/docker
+          
+          # Create a 100GB sparse file for Docker's backend 
+          # Note: 'truncate' creates a sparse file, so it won't actually consume 100GB on the runner instantly.
+          # We use 100G here to ensure there's plenty of headroom regardless of what A11Y_DOCKER_MAX_DISK is set to.
+          sudo truncate -s 100G /tmp/docker-backend.img
+          
+          # Format the sparse file as XFS
+          sudo mkfs.xfs /tmp/docker-backend.img
+          
+          # Mount it to /var/lib/docker with the required pquota flag
+          sudo mount -o loop,pquota /tmp/docker-backend.img /var/lib/docker
+          
+          # Restart Docker
+          sudo systemctl start docker
+          
+      - name: Checkout code
+        uses: actions/checkout@master
+        with:
+          repository: "GovTechSG/oobee"
+          ref: "${{ github.event.inputs.A11Y_ENGINE_BRANCH }}"
+
+      - name: Build and run Docker container
+        run: |
+          # Build your Docker image (replace 'oobee' and 'Dockerfile' with your image name and Dockerfile path)
+          docker build -t oobee .
+          
+          # Prefer workflow input; fall back to repo variable; otherwise use host default.
+          selected_memory="${DOCKER_MAX_MEMORY_INPUT}"
+          if [ "${selected_memory}" = "host-default" ]; then
+            selected_memory="${DOCKER_MAX_MEMORY_VAR}"
+          fi
+
+          # Run the Docker container; apply memory cap only if configured.
+          memory_arg=""
+          if [ -n "${selected_memory}" ]; then
+            memory_arg="--memory=${selected_memory}"
+          fi
+          
+          # Apply the user-defined disk size from the workflow inputs
+          docker run -dit --name oobee-container ${memory_arg} --storage-opt size=${DOCKER_MAX_DISK_INPUT} --add-host=docs.google.com:0.0.0.0 --add-host=assets.wogaa.sg:0.0.0.0 oobee
+        # Ensure the Docker container is running before running the next step
+        continue-on-error: true
+        
+      - name: Start accessibility scan in Docker container
+        run: |
+          # Conditionally add the -s flag based on user input
+          strategy_arg=""
+          strategy_input="${{ github.event.inputs.A11Y_SCAN_STRATEGY }}"
+          if [ -n "$strategy_input" ]; then
+            strategy_arg="-s $strategy_input"
+          fi
+
+          # Conditionally add the -y (ruleset) flag based on user input
+          ruleset_arg=""
+          ruleset_input="${{ github.event.inputs.A11Y_RULESET }}"
+          if [ -n "$ruleset_input" ]; then
+            ruleset_arg="-y $ruleset_input"
+          fi
+
+          # Execute a webisite crawl
+          docker exec -e GOOGLE_SAFE_BROWSING=1 -e OOBEE_VERBOSE=1 -e OOBEE_FAST_CRAWLER=1 oobee-container node --max-old-space-size=${{ github.event.inputs.A11Y_NODE_MAX_OLD_SPACE || '10000' }} ./dist/cli.js -d "Desktop" -c "${{ github.event.inputs.A11Y_SCANNER }}" -u "${{ github.event.inputs.A11Y_SCAN_URL }}" -p "${{ github.event.inputs.A11Y_SCAN_MAX_NUM_PAGES }}" -t "${{ github.event.inputs.A11Y_SCAN_MAX_CONCURRENCY }}" -a "${{ github.event.inputs.A11Y_SCAN_SCREENSHOTS }}" -r "${{ github.event.inputs.A11Y_SCAN_FOLLOW_ROBOTS }}" $strategy_arg $ruleset_arg -k "${{ env.username }}:${{ env.final_email }}" -b chromium -g yes || true & 
+          docker exec -e GOOGLE_SAFE_BROWSING=1 -e OOBEE_VERBOSE=1 -e OOBEE_FAST_CRAWLER=1 oobee-container node --max-old-space-size=${{ github.event.inputs.A11Y_NODE_MAX_OLD_SPACE || '10000' }} ./dist/cli.js -d "Mobile" -c "${{ github.event.inputs.A11Y_SCANNER }}" -u "${{ github.event.inputs.A11Y_SCAN_URL }}" -p "${{ github.event.inputs.A11Y_SCAN_MAX_NUM_PAGES }}" -t "${{ github.event.inputs.A11Y_SCAN_MAX_CONCURRENCY }}" -a "${{ github.event.inputs.A11Y_SCAN_SCREENSHOTS }}" -r "${{ github.event.inputs.A11Y_SCAN_FOLLOW_ROBOTS }}" $strategy_arg $ruleset_arg -k "${{ env.username }}:${{ env.final_email }}" -b chromium -g yes || true
+
+      - name: Print logs
+        run: |
+          docker exec oobee-container sh -c 'cat /app/oobee/????????-????-????-????-????????????.txt' || true
+
+      - name: Copy Results from Docker Container
+        run: docker cp oobee-container:/app/oobee/results ./results
+
+      - name: Zip Results
+        run: zip -r results.zip ./results
+
+      - name: Upload Zip File
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.zip
+
+      - name: Cleanup Docker container
+        run: |
+          # Stop and remove the Docker container
+          docker stop oobee-container
+          docker rm oobee-container
