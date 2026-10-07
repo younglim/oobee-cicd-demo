@@ -1,0 +1,213 @@
+name: Build Run and Test Website Crawl (Combined scan, Windows)
+
+on:
+  workflow_dispatch:
+    inputs:
+      A11Y_ENGINE_BRANCH:
+        description: 'Oobee Branch (master, other)'
+        required: true
+        default: 'master'
+      A11Y_SCAN_URL:
+        description: 'Website URL'
+        required: true
+        default: 'https://'
+      A11Y_SCANNER:
+        description: 'Scanner (website, sitemap, intelligent)'
+        required: true
+        default: 'intelligent'
+      A11Y_SCAN_MAX_NUM_PAGES:
+        description: 'Maximum Number of Pages to Scan'
+        required: true
+        default: '1000'
+      A11Y_SCAN_MAX_CONCURRENCY:
+        description: 'Maximum Number of Concurrent Page Scans (per device)'
+        required: true
+        default: '10'
+      A11Y_NODE_MAX_OLD_SPACE:
+        description: 'Node max old space size in MB'
+        required: false
+        default: '10000'
+      A11Y_SCAN_SCREENSHOTS:
+        description: 'Include screenshots (screenshots, none)'
+        required: true
+        default: 'none'
+      A11Y_SCAN_FOLLOW_ROBOTS:
+        description: 'Crawler adhere to robots.txt (yes, no)'
+        required: true
+        default: 'no'
+      A11Y_SCAN_STRATEGY:
+        description: 'Crawler strategy (same-hostname, same-domain). Leave blank for unsupported scans like local files.'
+        required: false
+        default: ''
+      A11Y_RULESET:
+        description: 'Ruleset flag -y (e.g., enable-wcag-aaa). Leave blank to omit.'
+        required: false
+        default: 'enable-wcag-aaa'
+      USERNAME:
+        description: "Your name (for telemetry purposes)"
+        required: false
+      EMAIL:
+        description: "Email address (for telemetry purposes)"
+        required: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Get Public IP Address
+        run: Invoke-RestMethod https://ipinfo.io
+        shell: pwsh
+
+      - name: Check if email is valid or empty
+        shell: pwsh
+        run: |
+          $email = "${{ inputs.EMAIL }}"
+          Write-Output "Email provided: $email"
+          if ($email -and $email -notmatch '^.+@.+\..+$') {
+            Write-Output "Invalid email provided. Workflow failed."
+            exit 1
+          }
+
+      - name: Use provided name and email or defaults
+        shell: pwsh
+        run: |
+          if (-not "${{ inputs.EMAIL }}") {
+            $final_email = "${{ github.actor }}@users.noreply.github.com"
+          } else {
+            $final_email = "${{ inputs.EMAIL }}"
+          }
+          $username = if ("${{ inputs.USERNAME }}") { "${{ inputs.USERNAME }}" } else { "${{ github.actor }}" }
+          echo "final_email=$final_email" >> $env:GITHUB_ENV
+          echo "username=$username" >> $env:GITHUB_ENV
+
+      - name: Checkout oobee
+        uses: actions/checkout@v3
+        with:
+          repository: "GovTechSG/oobee"
+          ref: "${{ github.event.inputs.A11Y_ENGINE_BRANCH }}"
+          path: oobee
+
+      - name: Copy scripts to workspace root
+        shell: pwsh
+        run: |
+          cp ${{ github.workspace }}/oobee/scripts/*.ps1 ${{ github.workspace }}
+          cp ${{ github.workspace }}/oobee/scripts/*.cmd ${{ github.workspace }}
+          cp ${{ github.workspace }}/oobee/scripts/*.xml ${{ github.workspace }}
+
+      - name: Install oobee dependencies
+        shell: pwsh
+        run: powershell.exe -NoProfile -ExecutionPolicy Bypass "& ${{ github.workspace }}\install_oobee_dependencies.ps1"
+        working-directory: ${{ github.workspace }}
+
+      - name: Install Playwright Chromium
+        shell: pwsh
+        run: |
+          & "${{ github.workspace }}\oobee_shell_ps.ps1" "cd oobee; npx playwright install chromium"
+        working-directory: ${{ github.workspace }}
+
+      - name: Start accessibility scans (Desktop + Mobile in parallel)
+        shell: pwsh
+        run: |
+          $strategy_arg = ""
+          $strategy_input = "${{ github.event.inputs.A11Y_SCAN_STRATEGY }}"
+          if ($strategy_input) {
+            $strategy_arg = "-s $strategy_input"
+          }
+
+          $ruleset_arg = ""
+          $ruleset_input = "${{ github.event.inputs.A11Y_RULESET }}"
+          if ($ruleset_input) {
+            $ruleset_arg = "-y $ruleset_input"
+          }
+
+          $node_max_old_space = "${{ github.event.inputs.A11Y_NODE_MAX_OLD_SPACE || '10000' }}"
+          $ws = "${{ github.workspace }}"
+
+          # Host resource info for diagnosing autoscaler behaviour
+          $os = Get-CimInstance Win32_OperatingSystem
+          Write-Output ("Logical CPUs: {0}, RAM: {1:N0} MB total, {2:N0} MB free" -f [Environment]::ProcessorCount, ($os.TotalVisibleMemorySize / 1KB), ($os.FreePhysicalMemory / 1KB))
+
+          $scans = @()
+          foreach ($device in @("Desktop", "Mobile")) {
+            $cmd = "cd oobee; node --max-old-space-size=$node_max_old_space ./dist/cli.js -c `"${{ github.event.inputs.A11Y_SCANNER }}`" -d `"$device`" -u `"${{ github.event.inputs.A11Y_SCAN_URL }}`" -p `"${{ github.event.inputs.A11Y_SCAN_MAX_NUM_PAGES }}`" -t `"${{ github.event.inputs.A11Y_SCAN_MAX_CONCURRENCY }}`" -a `"${{ github.event.inputs.A11Y_SCAN_SCREENSHOTS }}`" -r `"${{ github.event.inputs.A11Y_SCAN_FOLLOW_ROBOTS }}`" $strategy_arg $ruleset_arg -k `"${{ env.username }}:${{ env.final_email }}`" -g yes"
+            $scans += Start-Job -Name $device -ScriptBlock {
+              param($ws, $cmd)
+              Set-Location $ws
+              $env:OOBEE_VERBOSE = "1"
+              $env:OOBEE_FAST_CRAWLER = "1"
+              $env:GOOGLE_SAFE_BROWSING = "1"
+              $env:OOBEE_AUTOSCALE_DEBUG = "1"
+              $env:OOBEE_AUTOSCALE_DEBUG_INTERVAL_MS = "60000"
+              & "$ws\oobee_shell_ps.ps1" $cmd 2>&1
+            } -ArgumentList $ws, $cmd
+          }
+
+          # Stream both scans' output with a device prefix, and sample host
+          # CPU/memory/Chrome count every 60s, until both scans finish.
+          $lastSample = [DateTime]::MinValue
+          while ($scans | Where-Object { $_.State -eq 'Running' }) {
+            foreach ($j in $scans) {
+              Receive-Job $j | ForEach-Object { "[$($j.Name)] $_" } | Tee-Object -Append -FilePath "$ws\scan-$($j.Name).log"
+            }
+            if (((Get-Date) - $lastSample).TotalSeconds -ge 60) {
+              $lastSample = Get-Date
+              $os = Get-CimInstance Win32_OperatingSystem
+              $cpu = (Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average
+              $chromes = @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -match 'chrom' }).Count
+              $usedPct = 100 * (1 - $os.FreePhysicalMemory / $os.TotalVisibleMemorySize)
+              Write-Output ("[resource {0:HH:mm:ss}] {1}% cpu, {2:N0}% mem used ({3:N0} MB free), {4} chrome procs" -f (Get-Date).ToUniversalTime(), $cpu, $usedPct, ($os.FreePhysicalMemory / 1KB), $chromes)
+            }
+            Start-Sleep -Seconds 2
+          }
+          foreach ($j in $scans) {
+            Receive-Job $j | ForEach-Object { "[$($j.Name)] $_" } | Tee-Object -Append -FilePath "$ws\scan-$($j.Name).log"
+            Write-Output "$($j.Name) scan finished: $($j.State)"
+          }
+          $scans | Remove-Job -Force
+        working-directory: ${{ github.workspace }}
+        continue-on-error: true
+
+      - name: Concurrency summary
+        if: always()
+        shell: pwsh
+        run: |
+          foreach ($device in @("Desktop", "Mobile")) {
+            $log = "${{ github.workspace }}/scan-$device.log"
+            if (-not (Test-Path $log)) { continue }
+            Write-Output "=== ${device}: rate-limit / CPU / memory concurrency adjustments"
+            Select-String -Path $log -Pattern 'Rate limited \(HTTP \d+\)|Recovering concurrency|CPU starvation[^—]*— (reducing|recovering)|Renderer crashed|Memory (pressure|headroom)|No renderer crash for|main thread still busy|Target crashed' -AllMatches |
+              ForEach-Object { $_.Matches.Value -replace ' on https?://\S+', '' } |
+              Group-Object | Sort-Object Count -Descending |
+              ForEach-Object { "{0,7} {1}" -f $_.Count, $_.Name }
+            Write-Output "Last autoscale snapshot:"
+            Select-String -Path $log -Pattern '\[autoscale ' | Select-Object -Last 1 | ForEach-Object { $_.Line }
+          }
+        continue-on-error: true
+
+      - name: Print logs
+        shell: pwsh
+        run: |
+          Get-ChildItem "${{ github.workspace }}/oobee" -Filter "????????-????-????-????-????????????.txt" | ForEach-Object { Get-Content $_.FullName }
+        continue-on-error: true
+
+      - name: Copy results
+        shell: pwsh
+        run: |
+          if (Test-Path "${{ github.workspace }}/oobee/results") {
+            Copy-Item -Recurse "${{ github.workspace }}/oobee/results" "${{ github.workspace }}/results"
+          } else {
+            Write-Output "No results directory found"
+            exit 1
+          }
+          Copy-Item "${{ github.workspace }}/scan-*.log" "${{ github.workspace }}/results/" -ErrorAction SilentlyContinue
+
+      - name: Zip Results
+        shell: pwsh
+        run: Compress-Archive -Path "${{ github.workspace }}/results" -DestinationPath results.zip
+
+      - name: Upload Zip File
+        uses: actions/upload-artifact@v4
+        with:
+          name: results
+          path: results.zip
