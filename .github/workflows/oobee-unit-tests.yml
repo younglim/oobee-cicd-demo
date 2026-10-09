@@ -1,0 +1,75 @@
+name: Oobee Security Unit Tests (Linux Docker + Windows)
+
+# Small, fast check: builds oobee and runs the node:test security suites
+# (asgard-0001/0002/0003). No browser install, no scan.
+
+on:
+  workflow_dispatch:
+    inputs:
+      A11Y_ENGINE_BRANCH:
+        description: 'Oobee Branch (master, other)'
+        required: true
+        default: 'fix/asgard-0003-safebrowsing-zip-containment'
+      TEST_FILES:
+        description: 'Space-separated test files under tests/'
+        required: true
+        default: 'tests/ssrfRedirect.test.mjs tests/customFlowUrlGuard.test.mjs tests/safeBrowsingZip.test.mjs'
+
+env:
+  OOBEE_DISABLE_TELEMETRY: '1'
+  DISABLE_OOBEE_TELEMETRY: '1'
+  PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+
+jobs:
+  linux-docker:
+    name: Linux (Docker node:24)
+    runs-on: ubuntu-24.04
+    container:
+      image: node:24
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: GovTechSG/oobee
+          ref: ${{ inputs.A11Y_ENGINE_BRANCH }}
+      - name: Environment
+        run: |
+          node --version
+          cat /etc/os-release | head -2
+          test -f /.dockerenv && echo "Running inside Docker"
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Test
+        run: node --test --test-reporter=spec ${{ inputs.TEST_FILES }}
+
+  windows:
+    name: Windows
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: GovTechSG/oobee
+          ref: ${{ inputs.A11Y_ENGINE_BRANCH }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Environment
+        shell: pwsh
+        run: |
+          node --version
+          [System.Environment]::OSVersion.VersionString
+          # Symlink creation needs Developer Mode/admin; report whether it works here.
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\slt" | Out-Null
+          try {
+            New-Item -ItemType SymbolicLink -Path "$env:RUNNER_TEMP\slt\link" -Target "$env:RUNNER_TEMP" -ErrorAction Stop | Out-Null
+            Write-Output "Symlink creation: allowed"
+          } catch { Write-Output "Symlink creation: NOT allowed ($($_.Exception.Message))" }
+      - name: Install
+        run: npm ci --no-audit --no-fund
+      - name: Build
+        run: npm run build
+      - name: Test
+        shell: pwsh
+        # npm's test:unit uses POSIX `VAR=1 cmd` syntax, so call node directly.
+        run: node --test --test-reporter=spec ${{ inputs.TEST_FILES }}
