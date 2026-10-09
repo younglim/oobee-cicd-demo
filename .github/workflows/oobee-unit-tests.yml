@@ -40,6 +40,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Build
         run: npm run build
+      - name: Install Chromium (for browser-based tests)
+        run: npx playwright install --with-deps chromium
       - name: Test
         run: node --test --test-reporter=spec ${{ inputs.TEST_FILES }}
 
@@ -69,6 +71,8 @@ jobs:
         run: npm ci --no-audit --no-fund
       - name: Build
         run: npm run build
+      - name: Install Chromium (for browser-based tests)
+        run: npx playwright install chromium
       - name: Test
         shell: pwsh
         # npm's test:unit uses POSIX `VAR=1 cmd` syntax, so call node directly.
